@@ -1,5 +1,7 @@
 # Candotti: oxidizing Thread & Matter
 
+Current status: experimental. There is no working code here.
+
 Specification references:
 
 * [Matter Core](https://csa-iot.org/wp-content/uploads/2022/11/22-27349-001_Matter-1.0-Core-Specification.pdf)
