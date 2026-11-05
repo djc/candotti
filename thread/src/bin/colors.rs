@@ -1,36 +1,30 @@
 #![no_main]
 #![no_std]
-#![feature(type_alias_impl_trait)]
-
-use core::mem;
 
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::usb::vbus_detect::{HardwareVbusDetect, VbusDetect};
-use embassy_nrf::usb::{Driver, Instance};
+use embassy_nrf::usb::Driver;
 use embassy_nrf::{bind_interrupts, pac, peripherals, usb};
 use embassy_time::{Duration, Timer};
-use embassy_usb::UsbDevice;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
+use embassy_usb::UsbDevice;
 use panic_probe as _;
 use static_cell::StaticCell;
 
 macro_rules! singleton {
-    ($val:expr) => {{
-        type T = impl Sized;
-        static STATIC_CELL: StaticCell<T> = StaticCell::new();
-        let (x,) = STATIC_CELL.init(($val,));
-        x
+    ($ty:ty, $val:expr) => {{
+        static STATIC_CELL: StaticCell<$ty> = StaticCell::new();
+        STATIC_CELL.init($val)
     }};
 }
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let clock: pac::CLOCK = unsafe { mem::transmute(()) };
-    clock.tasks_hfclkstart.write(|w| unsafe { w.bits(1) });
-    while clock.events_hfclkstarted.read().bits() != 1 {}
+    pac::CLOCK.tasks_hfclkstart().write_value(1);
+    while pac::CLOCK.events_hfclkstarted().read() != 1 {}
 
     let peripherals = embassy_nrf::init(embassy_nrf::config::Config::default());
     let driver = Driver::new(peripherals.USBD, Irqs, HardwareVbusDetect::new(Irqs));
@@ -52,32 +46,33 @@ async fn main(spawner: Spawner) {
     let mut builder = embassy_usb::Builder::new(
         driver,
         config,
-        &mut singleton!([0; 256])[..],
-        &mut singleton!([0; 256])[..],
-        &mut singleton!([0; 256])[..],
-        &mut singleton!([0; 128])[..],
-        &mut singleton!([0; 128])[..],
+        &mut singleton!([u8; 256], [0; 256])[..],
+        &mut singleton!([u8; 256], [0; 256])[..],
+        &mut singleton!([u8; 128], [0; 128])[..],
+        &mut singleton!([u8; 128], [0; 128])[..],
     );
 
-    let state = singleton!(State::new());
+    let state = singleton!(State<'static>, State::new());
     let class = CdcAcmClass::new(&mut builder, state, 64);
     let usb = builder.build();
-    defmt::unwrap!(spawner.spawn(usb_task(usb)));
-    defmt::unwrap!(spawner.spawn(echo_task(class)));
+    spawner.spawn(defmt::unwrap!(usb_task(usb)));
+    spawner.spawn(defmt::unwrap!(echo_task(class)));
 
     let led1 = Output::new(peripherals.P0_06, Level::High, OutputDrive::Standard);
     let led2_red = Output::new(peripherals.P0_08, Level::High, OutputDrive::Standard);
     let led2_green = Output::new(peripherals.P1_09, Level::High, OutputDrive::Standard);
     let led2_blue = Output::new(peripherals.P0_12, Level::High, OutputDrive::Standard);
-    defmt::unwrap!(spawner.spawn(blinky(led1, led2_red, led2_green, led2_blue)));
+    spawner.spawn(defmt::unwrap!(blinky(
+        led1, led2_red, led2_green, led2_blue
+    )));
 }
 
 #[embassy_executor::task]
 async fn blinky(
-    mut led1: Output<'static, peripherals::P0_06>,
-    mut led2_red: Output<'static, peripherals::P0_08>,
-    mut led2_green: Output<'static, peripherals::P1_09>,
-    mut led2_blue: Output<'static, peripherals::P0_12>,
+    mut led1: Output<'static>,
+    mut led2_red: Output<'static>,
+    mut led2_green: Output<'static>,
+    mut led2_blue: Output<'static>,
 ) {
     let mut color = Color::Red;
     let mut cycles = 5;
@@ -134,20 +129,16 @@ pub enum Color {
 
 bind_interrupts!(struct Irqs {
     USBD => usb::InterruptHandler<peripherals::USBD>;
-    POWER_CLOCK => usb::vbus_detect::InterruptHandler;
+    CLOCK_POWER => usb::vbus_detect::InterruptHandler;
 });
 
 #[embassy_executor::task]
-async fn usb_task(
-    mut device: UsbDevice<'static, Driver<'static, peripherals::USBD, HardwareVbusDetect>>,
-) {
+async fn usb_task(mut device: UsbDevice<'static, Driver<'static, HardwareVbusDetect>>) {
     device.run().await;
 }
 
 #[embassy_executor::task]
-async fn echo_task(
-    mut class: CdcAcmClass<'static, Driver<'static, peripherals::USBD, HardwareVbusDetect>>,
-) {
+async fn echo_task(mut class: CdcAcmClass<'static, Driver<'static, HardwareVbusDetect>>) {
     loop {
         class.wait_connection().await;
         defmt::info!("Connected");
@@ -156,8 +147,8 @@ async fn echo_task(
     }
 }
 
-async fn echo<'d, T: Instance + 'd, P: VbusDetect + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T, P>>,
+async fn echo<'d, P: VbusDetect + 'd>(
+    class: &mut CdcAcmClass<'d, Driver<'d, P>>,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
     loop {
