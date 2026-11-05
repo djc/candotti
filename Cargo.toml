@@ -1,8 +1,9 @@
 [workspace]
 members = ["thread"]
+resolver = "3"
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 
 [profile.dev]
 codegen-units = 1
